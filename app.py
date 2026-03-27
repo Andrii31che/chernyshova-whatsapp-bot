@@ -16,7 +16,7 @@ PDF_URL_B2B_UA = os.environ.get("PDF_URL_B2B_UA", "")
 PAYMENT_URL = "https://secure.wayforpay.com/button/b1dfd9c78fe33"
 CALENDLY_URL = "https://calendly.com/andreu31che/30min"
 
-META_API_URL = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
+META_API_URL = f"https://graph.facebook.com/v22.0/{PHONE_NUMBER_ID}/messages"
 
 app = Flask(__name__)
 
@@ -191,7 +191,16 @@ def send_buttons(to, body, buttons):
         }
     }
     resp = http_requests.post(META_API_URL, json=payload, headers=_headers())
-    logging.info(f"send_buttons to={to} status={resp.status_code}")
+    logging.info(f"send_buttons to={to} status={resp.status_code} resp={resp.text[:300]}")
+
+    # Fallback: if interactive buttons fail, send numbered text menu
+    if resp.status_code != 200:
+        logging.info(f"Buttons failed, falling back to text menu")
+        menu_text = body + "\n"
+        for i, btn in enumerate(buttons[:3], 1):
+            menu_text += f"\n{i}. {btn['title']}"
+        return send_text(to, menu_text)
+
     return resp
 
 
