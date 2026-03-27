@@ -1,26 +1,29 @@
 import logging
 import os
+import json
+import requests as http_requests
 from flask import Flask, request
-from twilio.rest import Client
 
 logging.basicConfig(level=logging.INFO)
 
 # === CONFIG ===
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER")  # "whatsapp:+14155238886"
-PDF_URL_RU = os.environ.get("PDF_URL_RU", "")  # Direct URL to RU PDF guide
-PDF_URL_UA = os.environ.get("PDF_URL_UA", "")  # Direct URL to UA PDF guide
+WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
+PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "chernyshova_bot_verify_2024")
+PDF_URL_RU = os.environ.get("PDF_URL_RU", "")
+PDF_URL_UA = os.environ.get("PDF_URL_UA", "")
+PDF_URL_B2B_UA = os.environ.get("PDF_URL_B2B_UA", "")
 PAYMENT_URL = "https://secure.wayforpay.com/button/b1dfd9c78fe33"
 CALENDLY_URL = "https://calendly.com/andreu31che/30min"
 
-client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+META_API_URL = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
+
 app = Flask(__name__)
 
-# === USER STATE (in-memory, per phone number) ===
+# === USER STATE ===
 user_states = {}
 
-# === TEXTS (synced with Telegram bot v2) ===
+# === TEXTS (synced with Telegram bot) ===
 TEXTS = {
     "ru": {
         "welcome": "Привет! Я помощник Татьяны Чернышовой 👋\n\nВыбери что тебя интересует:",
@@ -28,15 +31,12 @@ TEXTS = {
         "b2b": "Я косметолог",
         "menu_b2c": "Отлично! Что хочешь узнать?",
         "menu_b2b": "Отлично! Что тебя интересует?",
-        "guide": "Получить бесплатный гайд",
-        "consult": "Записаться на консультацию",
-        "courses": "Узнать о курсах",
-        "channel": "Подписаться на канал",
-        "guide_text": "Держи гайд «Скрытые триггеры старения» 👇",
-        "consult_text": (
-            "Записаться на индивидуальный разбор:\n\n"
-            "📲 {}".format(CALENDLY_URL)
-        ),
+        "guide": "📄 Бесплатный гайд",
+        "consult": "📲 Консультация",
+        "courses": "🎓 Курсы",
+        "channel": "📢 Канал",
+        "guide_text": "Держи гайд «5 ошибок ухода, которые старят вас каждый день» 👇",
+        "consult_text": "Записаться на индивидуальный разбор:\n\n📲 {}".format(CALENDLY_URL),
         "courses_text_b2c": (
             "🌿 Программа «Молодость изнутри»\n\n"
             "7-дневный протокол от врача-невролога и косметолога.\n"
@@ -53,7 +53,7 @@ TEXTS = {
         "channel_url": "https://t.me/+ReTkhlrQbDk0ZjQy",
         "channel_b2b_url": "https://t.me/+S2TiLOcy1Nk1NmNi",
         "channel_text": "📢 Подписаться на канал:\n\n{}",
-        "back_to_menu": "\n\nНапиши *меню* чтобы вернуться в главное меню.",
+        "back": "⬅️ Назад",
     },
     "ua": {
         "welcome": "Привіт! Я помічник Тетяни Чернишової 👋\n\nОбери що тебе цікавить:",
@@ -61,15 +61,12 @@ TEXTS = {
         "b2b": "Я косметолог",
         "menu_b2c": "Чудово! Що хочеш дізнатися?",
         "menu_b2b": "Чудово! Що тебе цікавить?",
-        "guide": "Отримати безкоштовний гайд",
-        "consult": "Записатися на консультацію",
-        "courses": "Дізнатися про курси",
-        "channel": "Підписатися на канал",
-        "guide_text": "Тримай гайд «Приховані тригери старіння» 👇",
-        "consult_text": (
-            "Записатися на індивідуальний розбір:\n\n"
-            "📲 {}".format(CALENDLY_URL)
-        ),
+        "guide": "📄 Безкоштовний гайд",
+        "consult": "📲 Консультація",
+        "courses": "🎓 Курси",
+        "channel": "📢 Канал",
+        "guide_text": "Тримай гайд «5 помилок догляду, які старять вас щодня» 👇",
+        "consult_text": "Записатися на індивідуальний розбір:\n\n📲 {}".format(CALENDLY_URL),
         "courses_text_b2c": (
             "🌿 Програма «Молодість зсередини»\n\n"
             "7-денний протокол від лікаря-невролога і косметолога.\n"
@@ -84,9 +81,9 @@ TEXTS = {
             "Стеж за каналом — анонс буде найближчим часом! 📢"
         ),
         "channel_url": "https://t.me/+eV7jvuOEncJlYjli",
-        "channel_b2b_url": "https://t.me/chernyshova_b2b_ua",
+        "channel_b2b_url": "https://t.me/+FoY6RdWgfldhOGEy",
         "channel_text": "📢 Підписатися на канал:\n\n{}",
-        "back_to_menu": "\n\nНапиши *меню* щоб повернутися до головного меню.",
+        "back": "⬅️ Назад",
     },
     "en": {
         "welcome": "Hi! I'm Tatiana Chernyshova's assistant 👋\n\nWhat are you interested in?",
@@ -94,15 +91,12 @@ TEXTS = {
         "b2b": "I'm a cosmetologist",
         "menu_b2c": "Great! What would you like to know?",
         "menu_b2b": "Great! What are you interested in?",
-        "guide": "Get free guide",
-        "consult": "Book a consultation",
-        "courses": "Learn about courses",
-        "channel": "Subscribe to channel",
-        "guide_text": "Here's the guide «Hidden triggers of ageing» 👇",
-        "consult_text": (
-            "Book an individual consultation:\n\n"
-            "📲 {}".format(CALENDLY_URL)
-        ),
+        "guide": "📄 Free guide",
+        "consult": "📲 Consultation",
+        "courses": "🎓 Courses",
+        "channel": "📢 Channel",
+        "guide_text": "Here's the guide «5 skincare mistakes that age you every day» 👇",
+        "consult_text": "Book an individual consultation:\n\n📲 {}".format(CALENDLY_URL),
         "courses_text_b2c": (
             "🌿 Programme «Youth from within»\n\n"
             "7-day protocol from a neurologist and cosmetologist.\n"
@@ -119,7 +113,7 @@ TEXTS = {
         "channel_url": "https://t.me/+ReTkhlrQbDk0ZjQy",
         "channel_b2b_url": "https://t.me/+S2TiLOcy1Nk1NmNi",
         "channel_text": "📢 Subscribe to channel:\n\n{}",
-        "back_to_menu": "\n\nType *menu* to return to the main menu.",
+        "back": "⬅️ Back",
     },
     "es": {
         "welcome": "¡Hola! Soy el asistente de Tatiana Chernyshova 👋\n\n¿Qué te interesa?",
@@ -127,15 +121,12 @@ TEXTS = {
         "b2b": "Soy cosmetóloga",
         "menu_b2c": "¡Genial! ¿Qué quieres saber?",
         "menu_b2b": "¡Genial! ¿Qué te interesa?",
-        "guide": "Obtener guía gratuita",
-        "consult": "Reservar consulta",
-        "courses": "Ver cursos",
-        "channel": "Suscribirse al canal",
-        "guide_text": "Aquí tienes la guía «Desencadenantes ocultos del envejecimiento» 👇",
-        "consult_text": (
-            "Reserva una consulta individual:\n\n"
-            "📲 {}".format(CALENDLY_URL)
-        ),
+        "guide": "📄 Guía gratuita",
+        "consult": "📲 Consulta",
+        "courses": "🎓 Cursos",
+        "channel": "📢 Canal",
+        "guide_text": "Aquí tienes la guía «5 errores de cuidado que te envejecen cada día» 👇",
+        "consult_text": "Reserva una consulta individual:\n\n📲 {}".format(CALENDLY_URL),
         "courses_text_b2c": (
             "🌿 Programa «Juventud desde dentro»\n\n"
             "Protocolo de 7 días de una neuróloga y cosmetóloga.\n"
@@ -152,74 +143,118 @@ TEXTS = {
         "channel_url": "https://t.me/+ReTkhlrQbDk0ZjQy",
         "channel_b2b_url": "https://t.me/+S2TiLOcy1Nk1NmNi",
         "channel_text": "📢 Suscribirse al canal:\n\n{}",
-        "back_to_menu": "\n\nEscribe *menú* para volver al menú principal.",
+        "back": "⬅️ Atrás",
     }
 }
 
 
-# === HELPERS ===
+# === META API HELPERS ===
+
+def _headers():
+    return {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+
+def send_text(to, body):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": body}
+    }
+    resp = http_requests.post(META_API_URL, json=payload, headers=_headers())
+    logging.info(f"send_text to={to} status={resp.status_code}")
+    return resp
+
+
+def send_buttons(to, body, buttons):
+    """Send interactive reply buttons (max 3). buttons=[{"id":"x","title":"Y"},...]"""
+    btn_list = []
+    for btn in buttons[:3]:
+        btn_list.append({
+            "type": "reply",
+            "reply": {
+                "id": btn["id"],
+                "title": btn["title"][:20]
+            }
+        })
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": body},
+            "action": {"buttons": btn_list}
+        }
+    }
+    resp = http_requests.post(META_API_URL, json=payload, headers=_headers())
+    logging.info(f"send_buttons to={to} status={resp.status_code}")
+    return resp
+
+
+def send_document(to, url, caption="", filename="guide.pdf"):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "document",
+        "document": {
+            "link": url,
+            "caption": caption,
+            "filename": filename
+        }
+    }
+    resp = http_requests.post(META_API_URL, json=payload, headers=_headers())
+    logging.info(f"send_document to={to} status={resp.status_code}")
+    return resp
+
+
+# === STATE ===
 
 def get_state(phone):
-    """Get or create user state."""
     if phone not in user_states:
         user_states[phone] = {"lang": None, "direction": None, "step": "lang"}
     return user_states[phone]
 
 
-def send_message(to, body):
-    """Send a plain text WhatsApp message."""
-    client.messages.create(
-        from_=TWILIO_WHATSAPP_NUMBER,
-        to=to,
-        body=body
-    )
-
-
-def send_numbered_menu(to, body, options):
-    """
-    Send a menu as numbered text options.
-    Most reliable approach — works immediately without Content API.
-    Users reply with the number.
-    """
-    menu_text = body + "\n\n"
-    for i, opt in enumerate(options, 1):
-        menu_text += f"{i}. {opt['label']}\n"
-    send_message(to, menu_text)
-
-
-def send_pdf(to, pdf_url, caption=""):
-    """Send a PDF document via WhatsApp."""
-    client.messages.create(
-        from_=TWILIO_WHATSAPP_NUMBER,
-        to=to,
-        body=caption or "📄",
-        media_url=[pdf_url]
-    )
-
-
-def get_pdf_url(lang):
-    """Return the correct PDF URL based on language (UA gets Ukrainian, all others get RU)."""
+def get_pdf_url(lang, direction):
+    """Return the correct PDF URL based on language and direction."""
+    if direction == "b2b" and lang == "ua" and PDF_URL_B2B_UA:
+        return PDF_URL_B2B_UA, "guide_b2b_ua.pdf"
     if lang == "ua" and PDF_URL_UA:
-        return PDF_URL_UA
-    return PDF_URL_RU
+        return PDF_URL_UA, "guide_ua.pdf"
+    if PDF_URL_RU:
+        return PDF_URL_RU, "guide_ru.pdf"
+    return None, None
 
 
-# === FLOW HANDLERS ===
+# === FLOW ===
+
+def show_lang_menu(phone):
+    """4 languages → 2 messages × 2 buttons each."""
+    send_buttons(phone, "Выберите язык / Оберіть мову:", [
+        {"id": "lang_ru", "title": "🇷🇺 Русский"},
+        {"id": "lang_ua", "title": "🇺🇦 Українська"},
+    ])
+    send_buttons(phone, "Choose language / Elige idioma:", [
+        {"id": "lang_en", "title": "🇬🇧 English"},
+        {"id": "lang_es", "title": "🇪🇸 Español"},
+    ])
+
 
 def handle_lang_step(phone, user_input):
-    """Process language choice."""
     state = get_state(phone)
-
-    lang_map = {"1": "ru", "2": "ua", "3": "en", "4": "es"}
-    text_map = {
-        "русский": "ru", "ru": "ru", "рус": "ru",
-        "українська": "ua", "ua": "ua", "укр": "ua",
-        "english": "en", "en": "en", "eng": "en",
-        "español": "es", "es": "es", "esp": "es",
+    lang_map = {
+        "lang_ru": "ru", "lang_ua": "ua", "lang_en": "en", "lang_es": "es",
+        "1": "ru", "2": "ua", "3": "en", "4": "es",
+        "русский": "ru", "ru": "ru",
+        "українська": "ua", "ua": "ua",
+        "english": "en", "en": "en",
+        "español": "es", "es": "es",
     }
-
-    choice = lang_map.get(user_input) or text_map.get(user_input.lower())
-
+    choice = lang_map.get(user_input.lower())
     if choice:
         state["lang"] = choice
         state["step"] = "direction"
@@ -228,50 +263,30 @@ def handle_lang_step(phone, user_input):
         show_lang_menu(phone)
 
 
-def show_lang_menu(phone):
-    """Send language selection menu."""
-    send_numbered_menu(
-        to=f"whatsapp:{phone}",
-        body="Выберите язык / Оберіть мову / Choose language / Elige idioma:",
-        options=[
-            {"id": "ru", "label": "🇷🇺 Русский"},
-            {"id": "ua", "label": "🇺🇦 Українська"},
-            {"id": "en", "label": "🇬🇧 English"},
-            {"id": "es", "label": "🇪🇸 Español"},
-        ]
-    )
-
-
 def show_direction_menu(phone):
-    """Send B2C/B2B direction menu."""
+    """B2C / B2B + Back = 3 buttons (fits limit)."""
     state = get_state(phone)
     t = TEXTS[state["lang"]]
-    send_numbered_menu(
-        to=f"whatsapp:{phone}",
-        body=t["welcome"],
-        options=[
-            {"id": "b2c", "label": f"💆‍♀️ {t['b2c']}"},
-            {"id": "b2b", "label": f"💼 {t['b2b']}"},
-        ]
-    )
+    send_buttons(phone, t["welcome"], [
+        {"id": "dir_b2c", "title": t["b2c"][:20]},
+        {"id": "dir_b2b", "title": t["b2b"][:20]},
+        {"id": "back_lang", "title": t["back"][:20]},
+    ])
 
 
 def handle_direction_step(phone, user_input):
-    """Process direction choice."""
     state = get_state(phone)
 
-    dir_map = {"1": "b2c", "2": "b2b"}
-    text_map_b2c = {"b2c", "anti-age", "для себя", "для себе", "for myself", "para mí"}
-    text_map_b2b = {"b2b", "косметолог", "cosmetologist", "cosmetóloga"}
+    if user_input in ("back_lang", "0"):
+        state["step"] = "lang"
+        show_lang_menu(phone)
+        return
 
-    choice = dir_map.get(user_input)
-    if not choice:
-        lower = user_input.lower()
-        if lower in text_map_b2c:
-            choice = "b2c"
-        elif lower in text_map_b2b:
-            choice = "b2b"
-
+    dir_map = {
+        "dir_b2c": "b2c", "dir_b2b": "b2b",
+        "1": "b2c", "2": "b2b",
+    }
+    choice = dir_map.get(user_input.lower())
     if choice:
         state["direction"] = choice
         state["step"] = "menu"
@@ -281,74 +296,83 @@ def handle_direction_step(phone, user_input):
 
 
 def show_main_menu(phone):
-    """Send the main action menu (4 options as numbered list)."""
+    """4 menu items + back → split into 2 messages."""
     state = get_state(phone)
     t = TEXTS[state["lang"]]
     direction = state["direction"]
     menu_text = t["menu_b2c"] if direction == "b2c" else t["menu_b2b"]
 
-    send_numbered_menu(
-        to=f"whatsapp:{phone}",
-        body=menu_text,
-        options=[
-            {"id": "guide",   "label": f"📄 {t['guide']}"},
-            {"id": "consult", "label": f"📲 {t['consult']}"},
-            {"id": "courses", "label": f"🎓 {t['courses']}"},
-            {"id": "channel", "label": f"📢 {t['channel']}"},
-        ]
-    )
+    # First 3: guide, consult, courses
+    send_buttons(phone, menu_text, [
+        {"id": "act_guide", "title": t["guide"][:20]},
+        {"id": "act_consult", "title": t["consult"][:20]},
+        {"id": "act_courses", "title": t["courses"][:20]},
+    ])
+    # Channel + Back
+    send_buttons(phone, "👇", [
+        {"id": "act_channel", "title": t["channel"][:20]},
+        {"id": "back_dir", "title": t["back"][:20]},
+    ])
 
 
 def handle_menu_step(phone, user_input):
-    """Process main menu choice."""
     state = get_state(phone)
     lang = state["lang"]
     t = TEXTS[lang]
     direction = state["direction"]
-    to = f"whatsapp:{phone}"
 
-    action_map = {"1": "guide", "2": "consult", "3": "courses", "4": "channel"}
-    text_map = {
+    if user_input in ("back_dir", "0"):
+        state["step"] = "direction"
+        show_direction_menu(phone)
+        return
+
+    if user_input == "back_menu":
+        show_main_menu(phone)
+        return
+
+    action_map = {
+        "act_guide": "guide", "act_consult": "consult",
+        "act_courses": "courses", "act_channel": "channel",
+        "1": "guide", "2": "consult", "3": "courses", "4": "channel",
         "гайд": "guide", "guide": "guide", "guía": "guide", "pdf": "guide",
-        "консультация": "consult", "консультація": "consult",
-        "consult": "consult", "consultation": "consult", "consulta": "consult",
+        "консультация": "consult", "консультація": "consult", "consult": "consult",
         "курс": "courses", "courses": "courses", "cursos": "courses",
         "канал": "channel", "channel": "channel", "canal": "channel",
     }
 
-    choice = action_map.get(user_input)
-    if not choice:
-        choice = text_map.get(user_input.lower())
+    choice = action_map.get(user_input.lower()) if user_input else None
 
     if choice == "guide":
-        if direction == "b2c":
-            pdf_url = get_pdf_url(lang)
-            if pdf_url:
-                send_pdf(to, pdf_url, t["guide_text"])
-            else:
-                send_message(to, t["guide_text"] + "\n\n⚠️ PDF временно недоступен / PDF temporarily unavailable.")
+        pdf_url, filename = get_pdf_url(lang, direction)
+        if direction == "b2c" and pdf_url:
+            send_document(phone, pdf_url, t["guide_text"], filename)
+        elif direction == "b2b" and lang == "ua" and PDF_URL_B2B_UA:
+            send_document(phone, PDF_URL_B2B_UA, t["guide_text"], "guide_b2b_ua.pdf")
         else:
-            send_message(to, t["guide_text"])
-        send_message(to, t["back_to_menu"])
+            send_text(phone, t["guide_text"])
+        send_buttons(phone, "👇", [{"id": "back_menu", "title": t["back"][:20]}])
 
     elif choice == "consult":
-        send_message(to, t["consult_text"] + t["back_to_menu"])
+        send_text(phone, t["consult_text"])
+        send_buttons(phone, "👇", [{"id": "back_menu", "title": t["back"][:20]}])
 
     elif choice == "courses":
         if direction == "b2c":
-            send_message(to, t["courses_text_b2c"] + t["back_to_menu"])
+            send_text(phone, t["courses_text_b2c"])
         else:
-            send_message(to, t["courses_text_b2b"] + t["back_to_menu"])
+            send_text(phone, t["courses_text_b2b"])
+        send_buttons(phone, "👇", [{"id": "back_menu", "title": t["back"][:20]}])
 
     elif choice == "channel":
         channel_url = t["channel_b2b_url"] if direction == "b2b" else t["channel_url"]
-        send_message(to, t["channel_text"].format(channel_url) + t["back_to_menu"])
+        send_text(phone, t["channel_text"].format(channel_url))
+        send_buttons(phone, "👇", [{"id": "back_menu", "title": t["back"][:20]}])
 
     else:
         show_main_menu(phone)
 
 
-# === RESET / MENU COMMANDS ===
+# === RESET ===
 
 RESET_WORDS = {
     "start", "начать", "розпочати", "comenzar", "inicio",
@@ -358,42 +382,86 @@ RESET_WORDS = {
 }
 
 
-# === MAIN WEBHOOK ===
+# === WEBHOOK ===
+
+@app.route("/webhook", methods=["GET"])
+def verify():
+    """Meta webhook verification."""
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        logging.info("Webhook verified!")
+        return challenge, 200
+    return "Forbidden", 403
+
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """Handle incoming WhatsApp messages from Twilio."""
-    from_number = request.values.get("From", "")       # "whatsapp:+34612345678"
-    body = request.values.get("Body", "").strip()
-    button_payload = request.values.get("ButtonPayload", "")
+    """Handle incoming WhatsApp messages."""
+    data = request.get_json()
+    if not data:
+        return "OK", 200
 
-    phone = from_number.replace("whatsapp:", "")
-    user_input = button_payload or body
+    try:
+        entry = data.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0]
+        value = changes.get("value", {})
+        messages = value.get("messages", [])
 
-    logging.info(f"Message from {phone}: {user_input}")
+        if not messages:
+            return "OK", 200
 
-    # Check for reset/menu commands
-    if user_input.lower() in RESET_WORDS:
-        user_states.pop(phone, None)
-        get_state(phone)
-        show_lang_menu(phone)
-        return "", 200
+        msg = messages[0]
+        phone = msg.get("from", "")
+        msg_type = msg.get("type", "")
 
-    state = get_state(phone)
+        user_input = ""
+        if msg_type == "text":
+            user_input = msg.get("text", {}).get("body", "").strip()
+        elif msg_type == "interactive":
+            interactive = msg.get("interactive", {})
+            if interactive.get("type") == "button_reply":
+                user_input = interactive.get("button_reply", {}).get("id", "")
+            elif interactive.get("type") == "list_reply":
+                user_input = interactive.get("list_reply", {}).get("id", "")
 
-    if state["step"] == "lang":
-        handle_lang_step(phone, user_input)
-    elif state["step"] == "direction":
-        handle_direction_step(phone, user_input)
-    elif state["step"] == "menu":
-        handle_menu_step(phone, user_input)
+        if not user_input:
+            return "OK", 200
 
-    return "", 200
+        logging.info(f"Message from {phone}: {user_input} (type={msg_type})")
+
+        # Reset
+        if user_input.lower() in RESET_WORDS:
+            user_states.pop(phone, None)
+            get_state(phone)
+            show_lang_menu(phone)
+            return "OK", 200
+
+        # Handle back_menu globally
+        if user_input == "back_menu":
+            state = get_state(phone)
+            if state.get("lang") and state.get("direction"):
+                show_main_menu(phone)
+                return "OK", 200
+
+        state = get_state(phone)
+
+        if state["step"] == "lang":
+            handle_lang_step(phone, user_input)
+        elif state["step"] == "direction":
+            handle_direction_step(phone, user_input)
+        elif state["step"] == "menu":
+            handle_menu_step(phone, user_input)
+
+    except Exception as e:
+        logging.error(f"Error: {e}")
+
+    return "OK", 200
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Health check for Railway."""
     return "OK", 200
 
 
